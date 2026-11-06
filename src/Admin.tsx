@@ -54,6 +54,7 @@ export function Identity() {
     <label>Tipografía<select style={{ width: '100%' }} value={c.font_family} onChange={s('font_family')}><option value="Georgia, serif">Georgia (serif)</option><option value="Arial, sans-serif">Arial (sans)</option><option value="'Times New Roman', serif">Times New Roman</option><option value="Verdana, sans-serif">Verdana</option><option value="'Trebuchet MS', sans-serif">Trebuchet</option></select></label>
     <label>Información de contacto<input style={{ width: '100%' }} value={c.contact || ''} onChange={s('contact')} /></label>
     <label>Texto del pie de página<input style={{ width: '100%' }} value={c.footer_text || ''} onChange={s('footer_text')} /></label>
+    <div className="row">{[['name', 'Nombre de empresa'], ['logo', 'Logotipo'], ['contact', 'Información de contacto'], ['footer', 'Texto de pie de página']].map(([k, l]) => <label key={k}><input type="checkbox" checked={c.extra?.show?.[k] !== false} onChange={e => setC({ ...c, extra: { ...c.extra, show: { ...(c.extra?.show || {}), [k]: e.target.checked } } })} /> Mostrar {l}</label>)}</div>
     <label>Logotipo<input type="file" accept="image/*" onChange={up} /></label>{c.extra?.logo_url && <img src={c.extra.logo_url} alt="Logotipo" style={{ maxHeight: 70 }} />}
     <button className="p">Guardar identidad</button><span>{msg}</span></form></>
 }

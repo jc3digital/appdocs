@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate, useParams, Outlet } from 'react-router-dom'
 import { createClient } from '@supabase/supabase-js'
 import { useEditor, EditorContent } from '@tiptap/react'
@@ -11,6 +11,7 @@ import TableHeader from '@tiptap/extension-table-header'
 import TableCell from '@tiptap/extension-table-cell'
 import Image from '@tiptap/extension-image'
 import { Roles, Types, Identity } from './Admin'
+import { geom, hdrHtml, ftrHtml, paginate, PageBreaks, pgKey } from './pagination'
 import { sb, URL_, KEY_ } from './lib/supabase'
 
 const EXT = [StarterKit, Underline, TextAlign.configure({ types: ['heading', 'paragraph'] }), Table.configure({ resizable: true }), TableRow, TableHeader, TableCell, Image]
@@ -62,11 +63,11 @@ function Dashboard() {
 }
 
 function NewDoc() {
-  const { isAdmin, profile } = useAuth(); const nav = useNavigate(); const [types, setTypes] = useState<any[]>([]); const [priv, setPriv] = useState(false); const [err, setErr] = useState('')
+  const { isAdmin, profile } = useAuth(); const nav = useNavigate(); const [types, setTypes] = useState<any[]>([]); const [shared, setShared] = useState(false); const [err, setErr] = useState('')
   useEffect(() => { (async () => { const t = await sb.from('document_types').select('*').eq('is_active', true).order('sort'); const p = await sb.from('role_document_permissions').select('*').eq('role_id', profile.role_id)
     setTypes((t.data || []).filter((x: any) => isAdmin || p.data?.find((q: any) => q.document_type_id === x.id && q.can_create))) })() }, [])
-  const make = async (id: string) => { const r = await sb.rpc('create_document', { t: id, mode: priv ? 'private' : 'shared' }); if (r.error) return setErr(r.error.message); nav(`/documentos/${r.data}/editar`) }
-  return <><h1>¿Qué documento quieres crear?</h1><label className="row"><input type="checkbox" checked={priv} onChange={e => setPriv(e.target.checked)} /> Privado (solo tú y quienes autorices)</label>
+  const make = async (id: string) => { const r = await sb.rpc('create_document', { t: id, mode: shared ? 'shared' : 'private' }); if (r.error) return setErr(r.error.message); nav(`/documentos/${r.data}/editar`) }
+  return <><h1>¿Qué documento quieres crear?</h1><label className="row"><input type="checkbox" checked={shared} onChange={e => setShared(e.target.checked)} /> Compartido (visible para quienes tengan acceso a este tipo). Si no lo marcas, el documento será privado.</label>
     <div className="grid">{types.map(t => <button key={t.id} className="box" onClick={() => make(t.id)}>{t.name}</button>)}</div>{!types.length && <p>No tienes tipos de documento autorizados.</p>}<p className="err">{err}</p></>
 }
 
@@ -94,29 +95,54 @@ function Sheet({ d, editor }: any) {
       <tfoot><tr><td><div className="pad" style={{ fontSize: '.75rem', borderTop: `1px solid ${c.primary_color}`, padding: '3mm var(--m)' }}>{c.footer_text} · {d.number}</div></td></tr></tfoot></table></>
 }
 
+function Pages({ d, json }: any) {
+  const { g, pages } = useMemo(() => { const g = geom(d.design_snapshot); return { g, ...paginate(json, g, EXT) } }, [d.design_snapshot, json])
+  return <><style>{`@page{size:${g.W}mm ${g.H}mm;margin:0}`}</style>{pages.map((p: string[], i: number) =>
+    <div className="page" key={i} style={{ width: g.W + 'mm', height: g.H + 'mm', fontFamily: g.c.font_family, paddingTop: g.vp + 'mm' }}>
+      <div dangerouslySetInnerHTML={{ __html: hdrHtml(g.c, g) }} />
+      <div className="ProseMirror" style={{ height: g.contentH + 'mm', padding: `0 ${g.m}mm`, overflow: 'hidden' }} dangerouslySetInnerHTML={{ __html: p.join('') }} />
+      <div dangerouslySetInnerHTML={{ __html: ftrHtml(g.c, g, d.number, i + 1, pages.length) }} /></div>)}</>
+}
+
 function Doc({ edit }: { edit?: boolean }) {
-  const { id } = useParams(); const nav = useNavigate(); const { session } = useAuth(); const [d, setD] = useState<any>(null); const [title, setTitle] = useState(''); const [st, setSt] = useState('Guardado'); const [msg, setMsg] = useState(''); const [mail, setMail] = useState(''); const tm = useRef<any>()
+  const { id } = useParams(); const nav = useNavigate(); const { session } = useAuth(); const [d, setD] = useState<any>(null); const [title, setTitle] = useState(''); const [st, setSt] = useState('Guardado'); const [msg, setMsg] = useState(''); const [mail, setMail] = useState('')
+  const [live, setLive] = useState<any>(null); const [pg, setPg] = useState({ n: 1, fill: 0 }); const [showPrev, setShowPrev] = useState(window.innerWidth > 1300)
+  const tm = useRef<any>(); const pt = useRef<any>(); const ctx = useRef<any>({})
   useEffect(() => { sb.from('documents').select('*').eq('id', id).single().then(r => { setD(r.data); setTitle(r.data?.title || '') }) }, [id])
+  const g = useMemo(() => d ? geom(d.design_snapshot) : null, [d?.design_snapshot])
+  ctx.current = { g, c: g?.c, number: d?.number }
   const save = async (patch: any) => { setSt('Guardando…'); const r = await sb.from('documents').update(patch).eq('id', id); setSt(r.error ? 'Error al guardar: ' + r.error.message : 'Guardado'); return r }
-  const ed = useEditor({ extensions: EXT, content: d?.content, editable: !!edit && d?.status === 'draft', onUpdate: ({ editor }) => { setSt('Guardando…'); clearTimeout(tm.current); tm.current = setTimeout(() => save({ content: editor.getJSON() }), 2000) } }, [d?.id, edit, d?.status])
-  if (!d) return <p>Cargando…</p>
+  const repag = (e: any) => { if (!edit || !ctx.current.g || !e?.view || e.isDestroyed) return; const r = paginate(e.getJSON(), ctx.current.g, EXT)
+    e.view.dispatch(e.state.tr.setMeta(pgKey, { breaks: r.breaks, n: r.pages.length }).setMeta('addToHistory', false)); setPg({ n: r.pages.length, fill: r.lastFill }) }
+  const ed = useEditor({ extensions: edit ? [...EXT, PageBreaks(ctx)] : EXT, content: d?.content, editable: !!edit && d?.status === 'draft',
+    onCreate: ({ editor }) => { setTimeout(() => repag(editor), 60) },
+    onUpdate: ({ editor }) => { setSt('Guardando…'); clearTimeout(tm.current); tm.current = setTimeout(() => save({ content: editor.getJSON() }), 2000)
+      clearTimeout(pt.current); pt.current = setTimeout(() => { repag(editor); setLive(editor.getJSON()) }, 250) } }, [d?.id, edit, d?.status])
+  useEffect(() => { if (!ed || ed.isDestroyed || !edit) return; const dom = ed.view.dom; const h = () => repag(ed); dom.addEventListener('load', h, true); return () => dom.removeEventListener('load', h, true) }, [ed])
+  if (!d || !g) return <p>Cargando…</p>
   const img = async (e: any) => { const file = e.target.files[0]; if (!file) return; const path = `documents/${id}/${crypto.randomUUID()}.${file.name.split('.').pop()}`; const u = await sb.storage.from('document-assets').upload(path, file); if (u.error) return setMsg(u.error.message)
-    const g = await sb.storage.from('document-assets').createSignedUrl(path, 315360000); ed!.chain().focus().setImage({ src: g.data!.signedUrl }).run(); e.target.value = '' }
+    const s = await sb.storage.from('document-assets').createSignedUrl(path, 315360000); ed!.chain().focus().setImage({ src: s.data!.signedUrl }).run(); e.target.value = '' }
   const act = async (fn: () => Promise<any>) => { const r = await fn(); if (r?.error) setMsg(r.error.message) }
-  const B = (l: string, cmd: string, arg?: any) => <button className={ed?.isActive(cmd, arg) ? 'on' : ''} onClick={() => (ed!.chain().focus() as any)[cmd === 'bold' ? 'toggleBold' : cmd === 'italic' ? 'toggleItalic' : cmd === 'underline' ? 'toggleUnderline' : cmd === 'bulletList' ? 'toggleBulletList' : 'toggleOrderedList']().run()}>{l}</button>
+  const B = (l: string, fn: string, cmd: string) => <button className={ed?.isActive(cmd) ? 'on' : ''} onClick={() => (ed!.chain().focus() as any)[fn]().run()}>{l}</button>
   return <><div className="row noprint"><h1 style={{ margin: 0 }}>{d.number}</h1><span className={`tag ${d.status}`}>{d.status === 'draft' ? 'Borrador' : 'Listo'}</span>
-    {edit ? <><input value={title} onChange={e => setTitle(e.target.value)} onBlur={() => save({ title })} placeholder="Título del documento" /><span>{st}</span>
+    {edit ? <><input value={title} onChange={e => setTitle(e.target.value)} onBlur={() => save({ title })} placeholder="Título del documento" /><span>{st} · {pg.n} pág.</span><button onClick={() => { setShowPrev(!showPrev); setLive(ed!.getJSON()) }}>{showPrev ? 'Ocultar vista previa' : 'Ver vista previa'}</button>
       <button className="p" onClick={async () => { clearTimeout(tm.current); const r = await save({ content: ed!.getJSON(), title, status: 'ready' }); if (!r.error) nav(`/documentos/${id}`) }}>Listo</button></>
       : <><button onClick={() => act(async () => { if (d.status === 'ready') { const r = await sb.from('documents').update({ status: 'draft' }).eq('id', id); if (r.error) return r }; nav(`/documentos/${id}/editar`) })}>Editar</button>
         <button onClick={() => act(async () => { const r = await sb.rpc('duplicate_document', { src: id }); if (!r.error) nav(`/documentos/${r.data}/editar`); return r })}>Duplicar</button>
         {d.status === 'ready' ? <button className="p" onClick={() => window.print()}>Imprimir / PDF</button> : <span>Marca «Listo» para exportar.</span>}
-        <select value={d.access_mode} onChange={e => act(async () => { const r = await save({ access_mode: e.target.value }); if (!r.error) setD({ ...d, access_mode: e.target.value }); return r })}><option value="shared">Compartido</option><option value="private">Privado</option></select></>}</div>
+        <select value={d.access_mode} onChange={e => act(async () => { const r = await save({ access_mode: e.target.value }); if (!r.error) setD({ ...d, access_mode: e.target.value }); return r })}><option value="private">Privado</option><option value="shared">Compartido</option></select></>}</div>
     {msg && <p className="err">{msg}</p>}
-    {edit && d.status === 'draft' && <div className="tb noprint">{B('N', 'bold')}{B('K', 'italic')}{B('S', 'underline')}{B('• Lista', 'bulletList')}{B('1. Lista', 'orderedList')}
+    {edit && d.status === 'draft' && <div className="tb noprint">{B('N', 'toggleBold', 'bold')}{B('K', 'toggleItalic', 'italic')}{B('S', 'toggleUnderline', 'underline')}{B('• Lista', 'toggleBulletList', 'bulletList')}{B('1. Lista', 'toggleOrderedList', 'orderedList')}
       <button onClick={() => ed!.chain().focus().toggleHeading({ level: 1 }).run()}>Título</button><button onClick={() => ed!.chain().focus().toggleHeading({ level: 2 }).run()}>Subtítulo</button>
       {['left', 'center', 'right', 'justify'].map(a => <button key={a} onClick={() => ed!.chain().focus().setTextAlign(a).run()}>{({ left: 'Izq', center: 'Centro', right: 'Der', justify: 'Justif' } as any)[a]}</button>)}
-      <button onClick={() => ed!.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>Tabla</button><button onClick={() => ed!.chain().focus().addRowAfter().run()}>+ Fila</button><button onClick={() => ed!.chain().focus().addColumnAfter().run()}>+ Columna</button><button onClick={() => ed!.chain().focus().deleteTable().run()}>Quitar tabla</button><button onClick={() => ed!.chain().focus().setHorizontalRule().run()}>Salto de página</button><button onClick={() => ed!.chain().focus().insertContent('<p></p><p>______________________________</p><p>Nombre</p><p>Cargo</p><p>Sello</p>').run()}>Firma</button><label className="btn" style={{ padding: '.3rem .6rem' }}>Imagen<input type="file" accept="image/*" hidden onChange={img} /></label></div>}
-    <div className="scroll"><Sheet d={d} editor={ed} /></div>
+      <button onClick={() => ed!.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>Tabla</button><button onClick={() => ed!.chain().focus().addRowAfter().run()}>+ Fila</button><button onClick={() => ed!.chain().focus().addColumnAfter().run()}>+ Columna</button><button onClick={() => ed!.chain().focus().deleteTable().run()}>Quitar tabla</button>
+      <button onClick={() => ed!.chain().focus().setHorizontalRule().run()}>Salto de página</button><button onClick={() => ed!.chain().focus().insertContent('<p></p><p>______________________________</p><p>Nombre</p><p>Cargo</p><p>Sello</p>').run()}>Firma</button>
+      <label className="btn" style={{ padding: '.3rem .6rem' }}>Imagen<input type="file" accept="image/*" hidden onChange={img} /></label></div>}
+    {edit ? <div className="split"><div className="scroll"><div className="esheet" style={{ width: g.W + 'mm', fontFamily: g.c.font_family, ['--m' as any]: g.m + 'mm' }}>
+        <div style={{ paddingTop: g.vp + 'mm' }} dangerouslySetInnerHTML={{ __html: hdrHtml(g.c, g) }} /><EditorContent editor={ed} /><div style={{ height: pg.fill }} />
+        <div style={{ height: (g.ftr + g.vp) + 'mm' }} dangerouslySetInnerHTML={{ __html: ftrHtml(g.c, g, d.number, pg.n, pg.n) }} /></div></div>
+      {showPrev && <div className="prevw noprint"><b>Vista previa</b><div style={{ zoom: 0.55 }}><Pages d={d} json={live || d.content} /></div></div>}</div>
+      : <div className="scroll"><Pages d={d} json={d.content} /></div>}
     {!edit && <div className="row noprint"><input placeholder="Correo de la persona a autorizar" value={mail} onChange={e => setMail(e.target.value)} /><button onClick={() => act(async () => { const u = await sb.from('profiles').select('id').ilike('email', mail).maybeSingle(); if (!u.data) return { error: { message: 'No existe ese usuario' } }
       const r = await sb.from('document_permissions').insert({ document_id: id, user_id: u.data.id, granted_by: session.user.id }); setMsg(r.error ? 'No tienes permiso para compartir con esa persona' : 'Autorizado'); return null })}>Compartir</button></div>}</>
 }
