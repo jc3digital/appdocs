@@ -28,8 +28,9 @@ function Auth({ children }: any) {
 }
 
 function Login() {
-  const [e, setE] = useState(''); const [p, setP] = useState(''); const [err, setErr] = useState('')
-  const go = async (ev: any) => { ev.preventDefault(); const r = await sb.auth.signInWithPassword({ email: e, password: p }); if (r.error) setErr('Correo o contraseña incorrectos') }
+  const { session } = useAuth(); const [e, setE] = useState(''); const [p, setP] = useState(''); const [err, setErr] = useState('')
+  if (session) return <Navigate to="/" replace />
+  const go = async (ev: any) => { ev.preventDefault(); const r = await sb.auth.signInWithPassword({ email: e, password: p }); if (r.error) setErr(r.error.message === 'Invalid login credentials' ? 'Correo o contraseña incorrectos' : 'Error: ' + r.error.message) }
   return <form className="login" onSubmit={go}><h1>DISORTHMED</h1><input placeholder="Correo" type="email" value={e} onChange={x => setE(x.target.value)} required />
     <input placeholder="Contraseña" type="password" value={p} onChange={x => setP(x.target.value)} required /><button className="p">Ingresar</button><span className="err">{err}</span></form>
 }
